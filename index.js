@@ -100,6 +100,7 @@ client.once('ready', async () => {
 	const commands = [
 		new SlashCommandBuilder().setName('start').setDescription('Music controls'),
 		new SlashCommandBuilder().setName('shutdown').setDescription('Shut down the bot and delete temp files'),
+		new SlashCommandBuilder().setName('refresh').setDescription('Refresh the song list from the bucket'),
 	].map(cmd => cmd.toJSON());
 	const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 	try {
@@ -114,7 +115,7 @@ client.once('ready', async () => {
 });
 
 // Music player state
-let player, connection, currentSongIndex = 0, tempPath = null;
+let player, connection, currentSongIndex = 0, tempPath = null, lastChannel = null;
 
 const { ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 
@@ -143,8 +144,15 @@ function buildControlButtons(isPaused = false, isPlaying = false) {
 }
 
 
-// Handle /start and /shutdown commands
+// Handle /start, /shutdown, and /refresh commands
 client.on('interactionCreate', async interaction => {
+	if (interaction.isChatInputCommand() && interaction.commandName === 'refresh') {
+		const before = songs.length;
+		await fetchSongsFromBucket();
+		await interaction.reply({ content: `🔄 Song list refreshed! ${before} → ${songs.length} song(s) loaded.`, ephemeral: true });
+		return;
+	}
+
 	if (interaction.isChatInputCommand() && interaction.commandName === 'start') {
 		const member = interaction.member;
 		const voiceChannel = member && member.voice && member.voice.channel;
@@ -266,18 +274,49 @@ async function playSong(interaction, songIndex = currentSongIndex, isInitial = f
 	}
 	const resource = createAudioResource(TEMP_SONG_PATH);
 	player.play(resource);
-	player.once(AudioPlayerStatus.Idle, () => {
+	player.once(AudioPlayerStatus.Idle, async () => {
 		try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
+		// Auto-play next song if available
+		if (songs.length > 1) {
+			await autoAdvance((songIndex + 1) % songs.length);
+		}
 	});
-	// Update UI — when a song has just been started, treat it as playing
-	// (player.state.status may still be Buffering at this point)
-	if (isInitial && interaction.isRepliable()) {
+	// Store the channel for auto-advance messages
+	if (interaction.channel) lastChannel = interaction.channel;
+	// Update UI
+	if (isInitial) {
 		await interaction.reply({
 			content: `🎵 Now playing: **${songs[songIndex].title}**`,
 			components: [buildSongSelectMenu(songIndex), buildControlButtons(false, true)]
 		});
 	} else {
 		await updateControls(interaction, songIndex, { isPaused: false, isPlaying: true });
+	}
+}
+
+// Auto-advance to next song without needing an interaction object
+async function autoAdvance(nextIndex) {
+	currentSongIndex = nextIndex;
+	const song = songs[nextIndex];
+	try {
+		try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
+		await downloadSongToTemp(song.ociPath);
+		const resource = createAudioResource(TEMP_SONG_PATH);
+		player.play(resource);
+		player.once(AudioPlayerStatus.Idle, async () => {
+			try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
+			if (songs.length > 1) {
+				await autoAdvance((nextIndex + 1) % songs.length);
+			}
+		});
+		if (lastChannel) {
+			await lastChannel.send({
+				content: `🎵 Now playing: **${song.title}**`,
+				components: [buildSongSelectMenu(nextIndex), buildControlButtons(false, true)]
+			});
+		}
+	} catch (e) {
+		console.error('Failed to auto-advance to next song:', e);
 	}
 }
 
