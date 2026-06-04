@@ -2,11 +2,25 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, REST, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior } = require('@discordjs/voice');
 
+// Save native fetch/Request before oci-sdk's isomorphic-fetch overrides them
+const _nativeFetch = globalThis.fetch;
+const _nativeRequest = globalThis.Request;
+const _nativeResponse = globalThis.Response;
+
 // If you see an error about the DAVE protocol, install the required package:
 // npm install @snazzah/davey
 const common = require('oci-sdk').common;
 const objectStorage = require('oci-sdk').objectstorage;
+
+// Restore native fetch so the SDK can send Readable stream bodies
+if (_nativeFetch) globalThis.fetch = _nativeFetch;
+if (_nativeRequest) globalThis.Request = _nativeRequest;
+if (_nativeResponse) globalThis.Response = _nativeResponse;
+
 const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execFile } = require('child_process');
 
 // Song list — populated dynamically from the OCI bucket at startup
 let songs = [];
@@ -83,6 +97,57 @@ async function downloadSongToTemp(ociPath) {
     return TEMP_SONG_PATH;
 }
 
+function sanitizeFilename(name) {
+    return name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .substring(0, 80) || 'untitled';
+}
+
+async function uploadToBucket(localPath, objectName) {
+    const buffer = fs.readFileSync(localPath);
+    console.log('Uploading:', { objectName, namespaceName, bucketName, size: buffer.length });
+    try {
+        await ociClient.putObject({
+            namespaceName,
+            bucketName,
+            objectName,
+            putObjectBody: buffer,
+            contentLength: buffer.length,
+            contentType: 'audio/mpeg'
+        });
+    } catch (err) {
+        console.error('OCI Upload Error:', err);
+        console.error('Cause:', err.cause);
+        throw err;
+    }
+}
+
+function getFfmpegDir() {
+    const binDir = path.join(os.tmpdir(), 'dmb_ffmpeg_bin');
+    if (!fs.existsSync(binDir)) {
+        fs.mkdirSync(binDir, { recursive: true });
+        const ffmpegSrc = require('ffmpeg-static');
+        const ffprobeSrc = require('ffprobe-static').path;
+        fs.copyFileSync(ffmpegSrc, path.join(binDir, path.basename(ffmpegSrc)));
+        fs.copyFileSync(ffprobeSrc, path.join(binDir, path.basename(ffprobeSrc)));
+    }
+    return binDir;
+}
+
+function ytdlp(args, timeout = 120000) {
+    const ffmpegArgs = ['--ffmpeg-location', getFfmpegDir(), ...args];
+    return new Promise((resolve, reject) => {
+        execFile('yt-dlp', ffmpegArgs, { timeout, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+            if (err) {
+                return reject(new Error(stderr || err.message));
+            }
+            resolve(stdout.trim());
+        });
+    });
+}
+
 
 const client = new Client({
 	intents: [
@@ -101,6 +166,15 @@ client.once('ready', async () => {
 		new SlashCommandBuilder().setName('start').setDescription('Music controls'),
 		new SlashCommandBuilder().setName('shutdown').setDescription('Shut down the bot and delete temp files'),
 		new SlashCommandBuilder().setName('refresh').setDescription('Refresh the song list from the bucket'),
+		new SlashCommandBuilder()
+			.setName('add')
+			.setDescription('Download a YouTube video as MP3 and add it to the song library')
+			.addStringOption(opt => opt.setName('url').setDescription('YouTube video URL').setRequired(true))
+			.addStringOption(opt => opt.setName('name').setDescription('Custom song name (without .mp3)').setRequired(false)),
+		new SlashCommandBuilder()
+			.setName('remove')
+			.setDescription('Remove a song from the song library')
+			.addStringOption(opt => opt.setName('song').setDescription('The song to remove').setRequired(true).setAutocomplete(true)),
 	].map(cmd => cmd.toJSON());
 	const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 	try {
@@ -145,6 +219,16 @@ function buildControlButtons(isPaused = false, isPlaying = false) {
 
 // Handle /start, /shutdown, and /refresh commands
 client.on('interactionCreate', async interaction => {
+	if (interaction.isAutocomplete() && interaction.commandName === 'remove') {
+		const focused = interaction.options.getFocused();
+		const choices = songs
+			.filter(s => s.title.toLowerCase().includes(focused.toLowerCase()))
+			.slice(0, 25)
+			.map(s => ({ name: s.title, value: s.title }));
+		await interaction.respond(choices);
+		return;
+	}
+
 	if (interaction.isChatInputCommand() && interaction.commandName === 'refresh') {
 		const before = songs.length;
 		await fetchSongsFromBucket();
@@ -204,6 +288,67 @@ client.on('interactionCreate', async interaction => {
 		// Clear cache
 		for (const key in songCache) delete songCache[key];
 		await interaction.reply({ content: `Disconnected. Deleted ${deleted} temp files${failed ? ", failed to delete " + failed + "." : "."}`, flags: MessageFlags.Ephemeral });
+	}
+
+	if (interaction.isChatInputCommand() && interaction.commandName === 'add') {
+		await interaction.deferReply();
+		const url = interaction.options.getString('url');
+		const customName = interaction.options.getString('name');
+		const tempPath = './temp_download.mp3';
+		try {
+			try { fs.unlinkSync(tempPath); } catch {}
+			let displayTitle, objectName;
+			if (customName) {
+				displayTitle = customName.replace(/[<>:"/\\|?*]/g, '_').replace(/\.mp3$/i, '').trim();
+				objectName = sanitizeFilename(customName) + '.mp3';
+			} else {
+				displayTitle = (await ytdlp(['--print', 'title', url])).replace(/[<>:"/\\|?*]/g, '_').trim();
+				objectName = sanitizeFilename(displayTitle) + '.mp3';
+			}
+			await ytdlp(['-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', tempPath, url]);
+			const stats = fs.statSync(tempPath);
+			const sizeMB = stats.size / (1024 * 1024);
+			if (sizeMB > 15) {
+				try { fs.unlinkSync(tempPath); } catch {}
+				await interaction.editReply(`File exceeds 15 MB limit (${sizeMB.toFixed(1)} MB).`);
+				return;
+			}
+			await uploadToBucket(tempPath, objectName);
+			try { fs.unlinkSync(tempPath); } catch {}
+			await fetchSongsFromBucket();
+			await interaction.editReply(`Added **${displayTitle}** to the song library! (${sizeMB.toFixed(1)} MB)`);
+		} catch (err) {
+			try { fs.unlinkSync(tempPath); } catch {}
+			console.error('Failed to add song:', err);
+			await interaction.editReply(`Failed to add song: ${err.message}`);
+		}
+		return;
+	}
+
+	if (interaction.isChatInputCommand() && interaction.commandName === 'remove') {
+		await interaction.deferReply();
+		const songName = interaction.options.getString('song');
+		const song = songs.find(s => s.title === songName);
+		if (!song) {
+			await interaction.editReply(`Song **${songName}** not found.`);
+			return;
+		}
+		try {
+			await ociClient.deleteObject({
+				namespaceName,
+				bucketName,
+				objectName: song.ociPath
+			});
+			songs = songs.filter(s => s.ociPath !== song.ociPath);
+			if (currentSongIndex >= songs.length) {
+				currentSongIndex = Math.max(0, songs.length - 1);
+			}
+			await interaction.editReply(`Removed **${songName}** from the song library.`);
+		} catch (err) {
+			console.error('Failed to remove song:', err.message);
+			await interaction.editReply(`Failed to remove song: ${err.message}`);
+		}
+		return;
 	}
 
 	// Handle song selection
