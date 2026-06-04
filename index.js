@@ -117,8 +117,6 @@ client.once('ready', async () => {
 // Music player state
 let player, connection, currentSongIndex = 0, tempPath = null, lastChannel = null, lastControlMessage = null;
 
-const { ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
-
 // Helper to build the song select menu
 function buildSongSelectMenu(selectedIndex = 0) {
 	return new ActionRowBuilder().addComponents(
@@ -136,10 +134,11 @@ function buildSongSelectMenu(selectedIndex = 0) {
 // Helper to build control buttons
 function buildControlButtons(isPaused = false, isPlaying = false) {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('back').setLabel('⏮️ Back').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('pause').setLabel('⏸️ Pause').setStyle(ButtonStyle.Secondary).setDisabled(!isPlaying),
-        new ButtonBuilder().setCustomId('play').setLabel('▶️ Play').setStyle(ButtonStyle.Success).setDisabled(!isPaused),
-        new ButtonBuilder().setCustomId('skip').setLabel('⏭️ Skip').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId('back').setLabel('Back').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('pause').setLabel('Pause').setStyle(ButtonStyle.Secondary).setDisabled(!isPlaying),
+        new ButtonBuilder().setCustomId('play').setLabel('Play').setStyle(ButtonStyle.Secondary).setDisabled(!isPaused),
+        new ButtonBuilder().setCustomId('skip').setLabel('Skip').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('shuffle').setLabel('Shuffle').setStyle(ButtonStyle.Secondary)
     );
 }
 
@@ -243,6 +242,14 @@ client.on('interactionCreate', async interaction => {
 				currentSongIndex = (currentSongIndex - 1 + songs.length) % songs.length;
 				await playSong(interaction);
 			}
+		} else if (interaction.customId === 'shuffle') {
+			const currentSong = songs[currentSongIndex];
+			for (let i = songs.length - 1; i > 0; i--) {
+				const j = Math.floor(Math.random() * (i + 1));
+				[songs[i], songs[j]] = [songs[j], songs[i]];
+			}
+			currentSongIndex = songs.findIndex(s => s.ociPath === currentSong.ociPath);
+			await updateControls(interaction);
 		}
 	}
 });
