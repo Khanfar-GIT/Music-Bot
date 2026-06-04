@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, REST } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, REST, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior } = require('@discordjs/voice');
 
 // If you see an error about the DAVE protocol, install the required package:
@@ -115,7 +115,7 @@ client.once('ready', async () => {
 });
 
 // Music player state
-let player, connection, currentSongIndex = 0, tempPath = null, lastChannel = null;
+let player, connection, currentSongIndex = 0, tempPath = null, lastChannel = null, lastControlMessage = null;
 
 const { ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 
@@ -149,7 +149,7 @@ client.on('interactionCreate', async interaction => {
 	if (interaction.isChatInputCommand() && interaction.commandName === 'refresh') {
 		const before = songs.length;
 		await fetchSongsFromBucket();
-		await interaction.reply({ content: `🔄 Song list refreshed! ${before} → ${songs.length} song(s) loaded.`, ephemeral: true });
+		await interaction.reply({ content: `🔄 Song list refreshed! ${before} → ${songs.length} song(s) loaded.`, flags: MessageFlags.Ephemeral });
 		return;
 	}
 
@@ -157,7 +157,7 @@ client.on('interactionCreate', async interaction => {
 		const member = interaction.member;
 		const voiceChannel = member && member.voice && member.voice.channel;
 		if (!voiceChannel) {
-			await interaction.reply({ content: 'You must be in a voice channel!', ephemeral: true });
+			await interaction.reply({ content: 'You must be in a voice channel!', flags: MessageFlags.Ephemeral });
 			return;
 		}
 		// Join the voice channel immediately
@@ -204,7 +204,7 @@ client.on('interactionCreate', async interaction => {
 		} catch {}
 		// Clear cache
 		for (const key in songCache) delete songCache[key];
-		await interaction.reply({ content: `Disconnected. Deleted ${deleted} temp files${failed ? ", failed to delete " + failed + "." : "."}`, ephemeral: true });
+		await interaction.reply({ content: `Disconnected. Deleted ${deleted} temp files${failed ? ", failed to delete " + failed + "." : "."}`, flags: MessageFlags.Ephemeral });
 	}
 
 	// Handle song selection
@@ -274,9 +274,10 @@ async function playSong(interaction, songIndex = currentSongIndex, isInitial = f
 	}
 	const resource = createAudioResource(TEMP_SONG_PATH);
 	player.play(resource);
+	// Remove stale Idle listeners to prevent cascading auto-advances
+	player.removeAllListeners(AudioPlayerStatus.Idle);
 	player.once(AudioPlayerStatus.Idle, async () => {
 		try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
-		// Auto-play next song if available
 		if (songs.length > 1) {
 			await autoAdvance((songIndex + 1) % songs.length);
 		}
@@ -302,18 +303,25 @@ async function autoAdvance(nextIndex) {
 		try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
 		await downloadSongToTemp(song.ociPath);
 		const resource = createAudioResource(TEMP_SONG_PATH);
-		player.play(resource);
+		player.removeAllListeners(AudioPlayerStatus.Idle);
 		player.once(AudioPlayerStatus.Idle, async () => {
 			try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
 			if (songs.length > 1) {
 				await autoAdvance((nextIndex + 1) % songs.length);
 			}
 		});
-		if (lastChannel) {
-			await lastChannel.send({
-				content: `🎵 Now playing: **${song.title}**`,
-				components: [buildSongSelectMenu(nextIndex), buildControlButtons(false, true)]
-			});
+		const payload = {
+			content: `🎵 Now playing: **${song.title}**`,
+			components: [buildSongSelectMenu(nextIndex), buildControlButtons(false, true)]
+		};
+		if (lastControlMessage) {
+			try {
+				await lastControlMessage.edit(payload);
+			} catch {
+				lastControlMessage = lastChannel ? await lastChannel.send(payload) : null;
+			}
+		} else if (lastChannel) {
+			lastControlMessage = await lastChannel.send(payload);
 		}
 	} catch (e) {
 		console.error('Failed to auto-advance to next song:', e);
@@ -321,15 +329,28 @@ async function autoAdvance(nextIndex) {
 }
 
 // Update the control UI based on player state
+// Falls back to sending a fresh message if the interaction token has expired.
 async function updateControls(interaction, songIndex = currentSongIndex, forcedState = null) {
     const isPaused = forcedState ? forcedState.isPaused : (player && player.state.status === AudioPlayerStatus.Paused);
     const isPlaying = forcedState ? forcedState.isPlaying : (player && player.state.status === AudioPlayerStatus.Playing);
-    if (interaction.isRepliable()) {
-        await interaction.update({
-            content: `🎵 Now playing: **${songs[songIndex].title}**`,
-            components: [buildSongSelectMenu(songIndex), buildControlButtons(isPaused, isPlaying)]
-        });
-    }
+    const payload = {
+        content: `🎵 Now playing: **${songs[songIndex].title}**`,
+        components: [buildSongSelectMenu(songIndex), buildControlButtons(isPaused, isPlaying)]
+    };
+    try {
+        if (interaction.isRepliable()) {
+            await interaction.update(payload);
+            return;
+        }
+    } catch {}
+    // Interaction token expired — send a fresh message so buttons stay functional.
+    try {
+        const channel = interaction.channel || lastChannel;
+        if (channel) {
+            const msg = await channel.send(payload);
+            lastControlMessage = msg;
+        }
+    } catch {}
 }
 
 client.once('ready', () => {
