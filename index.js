@@ -139,8 +139,15 @@ function getFfmpegDir() {
 async function ytdlp(url, flags) {
     const opts = { ffmpegLocation: getFfmpegDir(), jsRuntimes: 'node', ...flags };
     const cookiesFile = process.env['YT_COOKIES_FILE'];
-    if (cookiesFile && fs.existsSync(cookiesFile)) {
-        opts.cookies = cookiesFile;
+    if (cookiesFile) {
+        if (fs.existsSync(cookiesFile)) {
+            opts.cookies = cookiesFile;
+            console.log('Using cookies file:', cookiesFile);
+        } else {
+            console.log('Cookies file not found:', cookiesFile);
+        }
+    } else {
+        console.log('YT_COOKIES_FILE not set in .env');
     }
     return await youtubedl(url, opts);
 }
