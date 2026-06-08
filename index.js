@@ -328,7 +328,7 @@ client.on('interactionCreate', async interaction => {
 				objectName = sanitizeFilename(displayTitle) + '.mp3';
 			}
 			console.log('Downloading audio for:', displayTitle);
-			await ytdlp(url, { extractAudio: true, audioFormat: 'mp3', audioQuality: 0, output: tempPath }, 300000);
+			await ytdlp(url, { format: 'bestaudio', mergeOutputFormat: 'mp3', audioQuality: 128, output: tempPath }, 300000);
 			console.log('Download complete');
 			const stats = fs.statSync(tempPath);
 			const sizeMB = stats.size / (1024 * 1024);
