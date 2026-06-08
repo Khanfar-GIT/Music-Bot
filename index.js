@@ -169,7 +169,6 @@ function getFfmpegDir() {
 async function ytdlp(url, flags, timeout = 120000) {
     const opts = {
         ffmpegLocation: getFfmpegDir(),
-        jsRuntimes: 'node',
         socketTimeout: 30,
         retries: 3,
         ...flags
@@ -183,6 +182,7 @@ async function ytdlp(url, flags, timeout = 120000) {
         }
     }
     const proc = youtubedl.exec(url, opts);
+    proc.stdout.resume();
     let output = '';
     proc.stderr.on('data', d => { const s = d.toString(); output += s; process.stdout.write(s); });
     const timer = timeout > 0 ? setTimeout(() => { proc.kill('SIGKILL'); }, timeout) : null;
@@ -356,7 +356,7 @@ client.on('interactionCreate', async interaction => {
 				objectName = sanitizeFilename(displayTitle) + '.mp3';
 			}
 			console.log('Downloading audio for:', displayTitle);
-			const buffer = await ytdlpToBuffer(url, { format: 'bestaudio', mergeOutputFormat: 'mp3', audioQuality: 128 }, 300000);
+			const buffer = await ytdlpToBuffer(url, { extractAudio: true, audioFormat: 'mp3', audioQuality: 128 }, 300000);
 			console.log('Download complete');
 			const sizeMB = buffer.length / (1024 * 1024);
 			if (sizeMB > 15) {
