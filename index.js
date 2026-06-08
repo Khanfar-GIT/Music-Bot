@@ -137,7 +137,13 @@ function getFfmpegDir() {
 }
 
 async function ytdlp(url, flags, timeout = 120000) {
-    const opts = { ffmpegLocation: getFfmpegDir(), jsRuntimes: 'node', ...flags };
+    const opts = {
+        ffmpegLocation: getFfmpegDir(),
+        jsRuntimes: 'node',
+        socketTimeout: 30,
+        retries: 3,
+        ...flags
+    };
     const cookiesFile = process.env['YT_COOKIES_FILE'];
     if (cookiesFile) {
         if (fs.existsSync(cookiesFile)) {
@@ -147,12 +153,13 @@ async function ytdlp(url, flags, timeout = 120000) {
         }
     }
     const proc = youtubedl.exec(url, opts);
-    proc.stderr.on('data', d => process.stdout.write(d));
+    let output = '';
+    proc.stderr.on('data', d => { const s = d.toString(); output += s; process.stdout.write(s); });
     const timer = timeout > 0 ? setTimeout(() => { proc.kill('SIGKILL'); }, timeout) : null;
     try {
         const result = await proc;
         if (result.exitCode !== 0) {
-            throw Object.assign(new Error(result.stderr.trim()), result);
+            throw Object.assign(new Error(output), result);
         }
         return result.stdout.trim();
     } finally {
@@ -173,6 +180,7 @@ const client = new Client({
 // Register /start and /shutdown commands on startup
 client.once('clientReady', async () => {
 	console.log(`Logged in as ${client.user.tag}`);
+	try { await youtubedl.update(); console.log('yt-dlp updated'); } catch {}
 	await fetchSongsFromBucket();
 	const commands = [
 		new SlashCommandBuilder().setName('start').setDescription('Music controls'),
