@@ -20,7 +20,7 @@ if (_nativeResponse) globalThis.Response = _nativeResponse;
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFile } = require('child_process');
+const youtubedl = require('youtube-dl-exec');
 
 // Song list — populated dynamically from the OCI bucket at startup
 let songs = [];
@@ -136,16 +136,8 @@ function getFfmpegDir() {
     return binDir;
 }
 
-function ytdlp(args, timeout = 120000) {
-    const ffmpegArgs = ['--ffmpeg-location', getFfmpegDir(), ...args];
-    return new Promise((resolve, reject) => {
-        execFile('yt-dlp', ffmpegArgs, { timeout, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
-            if (err) {
-                return reject(new Error(stderr || err.message));
-            }
-            resolve(stdout.trim());
-        });
-    });
+async function ytdlp(url, flags) {
+    return await youtubedl(url, { ffmpegLocation: getFfmpegDir(), ...flags });
 }
 
 
@@ -159,7 +151,7 @@ const client = new Client({
 
 
 // Register /start and /shutdown commands on startup
-client.once('ready', async () => {
+client.once('clientReady', async () => {
 	console.log(`Logged in as ${client.user.tag}`);
 	await fetchSongsFromBucket();
 	const commands = [
@@ -302,10 +294,10 @@ client.on('interactionCreate', async interaction => {
 				displayTitle = customName.replace(/[<>:"/\\|?*]/g, '_').replace(/\.mp3$/i, '').trim();
 				objectName = sanitizeFilename(customName) + '.mp3';
 			} else {
-				displayTitle = (await ytdlp(['--print', 'title', url])).replace(/[<>:"/\\|?*]/g, '_').trim();
+				displayTitle = (await ytdlp(url, { print: 'title' })).replace(/[<>:"/\\|?*]/g, '_').trim();
 				objectName = sanitizeFilename(displayTitle) + '.mp3';
 			}
-			await ytdlp(['-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', tempPath, url]);
+			await ytdlp(url, { extractAudio: true, audioFormat: 'mp3', audioQuality: 0, output: tempPath });
 			const stats = fs.statSync(tempPath);
 			const sizeMB = stats.size / (1024 * 1024);
 			if (sizeMB > 15) {
@@ -505,9 +497,5 @@ async function updateControls(interaction, songIndex = currentSongIndex, forcedS
         }
     } catch {}
 }
-
-client.once('ready', () => {
-	console.log(`Logged in as ${client.user.tag}`);
-});
 
 client.login(process.env.DISCORD_TOKEN);
