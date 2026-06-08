@@ -137,7 +137,12 @@ function getFfmpegDir() {
 }
 
 async function ytdlp(url, flags) {
-    return await youtubedl(url, { ffmpegLocation: getFfmpegDir(), ...flags });
+    const opts = { ffmpegLocation: getFfmpegDir(), jsRuntimes: 'node', ...flags };
+    const cookiesFile = process.env['YT_COOKIES_FILE'];
+    if (cookiesFile && fs.existsSync(cookiesFile)) {
+        opts.cookies = cookiesFile;
+    }
+    return await youtubedl(url, opts);
 }
 
 
