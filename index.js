@@ -136,18 +136,28 @@ function getFfmpegDir() {
     return binDir;
 }
 
-async function ytdlp(url, flags) {
+async function ytdlp(url, flags, timeout = 120000) {
     const opts = { ffmpegLocation: getFfmpegDir(), jsRuntimes: 'node', ...flags };
     const cookiesFile = process.env['YT_COOKIES_FILE'];
     if (cookiesFile) {
         if (fs.existsSync(cookiesFile)) {
             opts.cookies = cookiesFile;
-            console.log('Using cookies file:', cookiesFile);
         } else {
             console.log('Cookies file not found:', cookiesFile);
         }
     }
-    return await youtubedl(url, opts);
+    const proc = youtubedl.exec(url, opts);
+    proc.stderr.on('data', d => process.stdout.write(d));
+    const timer = timeout > 0 ? setTimeout(() => { proc.kill('SIGKILL'); }, timeout) : null;
+    try {
+        const result = await proc;
+        if (result.exitCode !== 0) {
+            throw Object.assign(new Error(result.stderr.trim()), result);
+        }
+        return result.stdout.trim();
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 
@@ -310,12 +320,7 @@ client.on('interactionCreate', async interaction => {
 				objectName = sanitizeFilename(displayTitle) + '.mp3';
 			}
 			console.log('Downloading audio for:', displayTitle);
-			const dlOpts = { extractAudio: true, audioFormat: 'mp3', audioQuality: 0, output: tempPath, ffmpegLocation: getFfmpegDir(), jsRuntimes: 'node' };
-			const cookiesFile = process.env['YT_COOKIES_FILE'];
-			if (cookiesFile && fs.existsSync(cookiesFile)) dlOpts.cookies = cookiesFile;
-			const dl = youtubedl.exec(url, dlOpts);
-			dl.stderr.on('data', d => process.stdout.write(d));
-			await dl;
+			await ytdlp(url, { extractAudio: true, audioFormat: 'mp3', audioQuality: 0, output: tempPath }, 300000);
 			console.log('Download complete');
 			const stats = fs.statSync(tempPath);
 			const sizeMB = stats.size / (1024 * 1024);
