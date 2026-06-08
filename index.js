@@ -455,6 +455,7 @@ async function autoAdvance(nextIndex) {
 		try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
 		await downloadSongToTemp(song.ociPath);
 		const resource = createAudioResource(TEMP_SONG_PATH);
+		player.play(resource);
 		player.removeAllListeners(AudioPlayerStatus.Idle);
 		player.once(AudioPlayerStatus.Idle, async () => {
 			try { fs.unlinkSync(TEMP_SONG_PATH); } catch {}
