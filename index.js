@@ -105,8 +105,7 @@ function sanitizeFilename(name) {
         .substring(0, 80) || 'untitled';
 }
 
-async function uploadToBucket(localPath, objectName) {
-    const buffer = fs.readFileSync(localPath);
+async function uploadToBucket(buffer, objectName) {
     console.log('Uploading:', { objectName, namespaceName, bucketName, size: buffer.length });
     try {
         await ociClient.putObject({
@@ -121,6 +120,37 @@ async function uploadToBucket(localPath, objectName) {
         console.error('OCI Upload Error:', err);
         console.error('Cause:', err.cause);
         throw err;
+    }
+}
+
+async function ytdlpToBuffer(url, flags, timeout = 120000) {
+    const opts = {
+        ffmpegLocation: getFfmpegDir(),
+        jsRuntimes: 'node',
+        socketTimeout: 30,
+        retries: 3,
+        ...flags
+    };
+    const cookiesFile = process.env['YT_COOKIES_FILE'];
+    if (cookiesFile) {
+        if (fs.existsSync(cookiesFile)) {
+            opts.cookies = cookiesFile;
+        }
+    }
+    const proc = youtubedl.exec(url, opts);
+    const chunks = [];
+    let errorOutput = '';
+    proc.stderr.on('data', d => { const s = d.toString(); errorOutput += s; process.stdout.write(s); });
+    proc.stdout.on('data', chunk => chunks.push(chunk));
+    const timer = timeout > 0 ? setTimeout(() => { proc.kill('SIGKILL'); }, timeout) : null;
+    try {
+        const result = await proc;
+        if (result.exitCode !== 0) {
+            throw Object.assign(new Error(errorOutput), result);
+        }
+        return Buffer.concat(chunks);
+    } finally {
+        if (timer) clearTimeout(timer);
     }
 }
 
@@ -314,9 +344,7 @@ client.on('interactionCreate', async interaction => {
 		await interaction.deferReply();
 		const url = interaction.options.getString('url');
 		const customName = interaction.options.getString('name');
-		const tempPath = './temp_download.mp3';
 		try {
-			try { fs.unlinkSync(tempPath); } catch {}
 			let displayTitle, objectName;
 			if (customName) {
 				displayTitle = customName.replace(/[<>:"/\\|?*]/g, '_').replace(/\.mp3$/i, '').trim();
@@ -328,21 +356,17 @@ client.on('interactionCreate', async interaction => {
 				objectName = sanitizeFilename(displayTitle) + '.mp3';
 			}
 			console.log('Downloading audio for:', displayTitle);
-			await ytdlp(url, { format: 'bestaudio', mergeOutputFormat: 'mp3', audioQuality: 128, output: tempPath }, 300000);
+			const buffer = await ytdlpToBuffer(url, { format: 'bestaudio', mergeOutputFormat: 'mp3', audioQuality: 128 }, 300000);
 			console.log('Download complete');
-			const stats = fs.statSync(tempPath);
-			const sizeMB = stats.size / (1024 * 1024);
+			const sizeMB = buffer.length / (1024 * 1024);
 			if (sizeMB > 15) {
-				try { fs.unlinkSync(tempPath); } catch {}
 				await interaction.editReply(`File exceeds 15 MB limit (${sizeMB.toFixed(1)} MB).`);
 				return;
 			}
-			await uploadToBucket(tempPath, objectName);
-			try { fs.unlinkSync(tempPath); } catch {}
+			await uploadToBucket(buffer, objectName);
 			await fetchSongsFromBucket();
 			await interaction.editReply(`Added **${displayTitle}** to the song library! (${sizeMB.toFixed(1)} MB)`);
 		} catch (err) {
-			try { fs.unlinkSync(tempPath); } catch {}
 			console.error('Failed to add song:', err);
 			await interaction.editReply(`Failed to add song: ${err.message}`);
 		}
