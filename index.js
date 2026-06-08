@@ -136,15 +136,8 @@ function getFfmpegDir() {
     return binDir;
 }
 
-const YT_EXTRACTOR_ARGS = 'youtube:player_client=android';
-
 async function ytdlp(url, flags) {
-    const opts = {
-        ffmpegLocation: getFfmpegDir(),
-        jsRuntimes: 'node',
-        extractorArgs: YT_EXTRACTOR_ARGS,
-        ...flags
-    };
+    const opts = { ffmpegLocation: getFfmpegDir(), jsRuntimes: 'node', ...flags };
     const cookiesFile = process.env['YT_COOKIES_FILE'];
     if (cookiesFile) {
         if (fs.existsSync(cookiesFile)) {
@@ -153,8 +146,6 @@ async function ytdlp(url, flags) {
         } else {
             console.log('Cookies file not found:', cookiesFile);
         }
-    } else {
-        console.log('YT_COOKIES_FILE not set in .env');
     }
     return await youtubedl(url, opts);
 }
