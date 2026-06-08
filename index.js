@@ -304,10 +304,19 @@ client.on('interactionCreate', async interaction => {
 				displayTitle = customName.replace(/[<>:"/\\|?*]/g, '_').replace(/\.mp3$/i, '').trim();
 				objectName = sanitizeFilename(customName) + '.mp3';
 			} else {
+				console.log('Fetching title for:', url);
 				displayTitle = (await ytdlp(url, { print: 'title' })).replace(/[<>:"/\\|?*]/g, '_').trim();
+				console.log('Title:', displayTitle);
 				objectName = sanitizeFilename(displayTitle) + '.mp3';
 			}
-			await ytdlp(url, { extractAudio: true, audioFormat: 'mp3', audioQuality: 0, output: tempPath });
+			console.log('Downloading audio for:', displayTitle);
+			const dlOpts = { extractAudio: true, audioFormat: 'mp3', audioQuality: 0, output: tempPath, ffmpegLocation: getFfmpegDir(), jsRuntimes: 'node' };
+			const cookiesFile = process.env['YT_COOKIES_FILE'];
+			if (cookiesFile && fs.existsSync(cookiesFile)) dlOpts.cookies = cookiesFile;
+			const dl = youtubedl.exec(url, dlOpts);
+			dl.stderr.on('data', d => process.stdout.write(d));
+			await dl;
+			console.log('Download complete');
 			const stats = fs.statSync(tempPath);
 			const sizeMB = stats.size / (1024 * 1024);
 			if (sizeMB > 15) {
